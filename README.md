@@ -21,13 +21,18 @@
 
 ### 方法一：ipk 安装（推荐）
 
-```bash
-# 在 OpenWrt buildroot / SDK 中
-cp -r luci-app-singbox-lite package/
-make package/luci-app-singbox-lite/compile
-# 将 bin/packages/.../luci-app-singbox-lite_1.0.0-1_all.ipk 传到路由器
-opkg install luci-app-singbox-lite_1.0.0-1_all.ipk
-```
+> **注意**：iStoreOS 24.10 / OpenWrt 24.10 的 opkg 只接受新格式 ipk（外层为 gzip tar，
+> 不再是 ar 归档），旧格式会报 `Malformed package file`。本仓库 Release 中的 ipk
+> 均为 24.10 新格式。
+
+从 [Releases](https://github.com/Chuang2016/luci-app-singbox-lite/releases) 下载：
+
+- `luci-app-singbox-lite_*_x86_64.ipk` —— **x86_64 软路由推荐**：内置 sing-box 内核，
+  安装后即用，无需再下载
+- `luci-app-singbox-lite_*_all.ipk` —— 纯插件（21KB），其他架构用；首次使用需在
+  「基本设置」页点「安装/更新内核」下载对应架构的 sing-box
+
+然后在 iStoreOS「系统 → 软件包」上传安装。
 
 ### 方法二：手动安装
 
