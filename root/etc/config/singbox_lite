@@ -1,7 +1,9 @@
 config main 'main'
 	option enabled '0'
 	option mode 'rule'
-	option tun '1'
+	# TUN 透明代理默认关闭：首次启用时只做 SOCKS/HTTP 代理，避免路由表被意外接管。
+	# 确认节点可用后，再手动打开。
+	option tun '0'
 	option mixed_port '1080'
 	option clash_port '9090'
 	option clash_secret ''

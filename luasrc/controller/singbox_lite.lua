@@ -1,10 +1,38 @@
 -- luci/controller/singbox_lite.lua - LuCI pages + JSON API for sing-box-lite
+--
+-- HARDENING NOTE: this controller is loaded into the same Lua state as every
+-- other LuCI app on each request. It must NEVER:
+--   * mutate the global package.path (would hijack require() for other apps)
+--   * require("json") / require("clash")  (name collision with other modules)
+--   * let an error escape index()         (would 502 the whole web UI)
+-- Private libs are loaded via dofile() with absolute paths instead.
 module("luci.controller.singbox_lite", package.seeall)
 
 local LIB = "/usr/lib/singbox_lite"
-package.path = LIB .. "/?.lua;" .. package.path
+
+local function load_lib(name)
+    local f, err = loadfile(LIB .. "/" .. name .. ".lua")
+    if not f then return nil end
+    local ok, mod = pcall(f)
+    if not ok then return nil end
+    return mod
+end
+
+local function json()
+    return load_lib("json")
+end
 
 function index()
+    -- index() runs on EVERY LuCI request (menu building). Never crash here.
+    pcall(index_safe)
+end
+
+function index_safe()
+    -- nixio may be absent in some dispatcher contexts; check before use
+    if type(nixio) ~= "table" or type(nixio.fs) ~= "table"
+       or type(nixio.fs.access) ~= "function" then
+        return
+    end
     if not nixio.fs.access("/etc/config/singbox_lite") then
         return
     end
@@ -41,16 +69,37 @@ local function clash_client()
     local uci = luci.model.uci.cursor()
     local port = tonumber(uci:get("singbox_lite", "main", "clash_port")) or 9090
     local secret = uci:get("singbox_lite", "main", "clash_secret") or ""
-    return require("clash").new("127.0.0.1", port, secret)
+    local clash = load_lib("clash")
+    if not clash then return nil end
+    return clash.new("127.0.0.1", port, secret)
 end
 
 local function json_out(t)
+    local j = json()
     luci.http.prepare_content("application/json")
-    luci.http.write(require("json").encode(t))
+    if j then
+        luci.http.write(j.encode(t))
+    else
+        luci.http.write('{"ok":false,"error":"json lib failed"}')
+    end
 end
 
 local function running()
     return luci.sys.call("pgrep -x singbox >/dev/null 2>&1") == 0
+end
+
+local function jdecode(s)
+    local j = json()
+    if not j then return nil end
+    local ok, v = pcall(j.decode, s)
+    if ok then return v end
+    return nil
+end
+
+local function jencode(t)
+    local j = json()
+    if not j then return nil end
+    return j.encode(t)
 end
 
 -- GET .../api/traffic -> {"up":bytes/s,"down":bytes/s,"running":bool}
@@ -59,8 +108,8 @@ function api_traffic()
         json_out({ running = false, up = 0, down = 0 })
         return
     end
-    local ok, c = pcall(clash_client)
-    if not ok then json_out({ running = true, error = "clash init failed" }) return end
+    local c = clash_client()
+    if not c then json_out({ running = true, error = "clash init failed" }) return end
     local r, err = c:traffic_sample()
     if r then
         json_out({ running = true, up = r.up, down = r.down })
@@ -73,12 +122,12 @@ end
 function api_proxies()
     local out = { running = running(), groups = {}, nodes = {} }
     if not out.running then json_out(out) return end
-    local ok, c = pcall(clash_client)
-    if not ok then out.error = "clash init failed"; json_out(out) return end
+    local c = clash_client()
+    if not c then out.error = "clash init failed"; json_out(out) return end
     local st, body = c:request("GET", "/proxies")
     if st == 200 and body then
-        local ok2, data = pcall(require("json").decode, body)
-        if ok2 and data and data.proxies then
+        local data = jdecode(body)
+        if data and data.proxies then
             for tag, p in pairs(data.proxies) do
                 if p.type == "Selector" or p.type == "URLTest" or p.type == "Fallback" then
                     out.groups[#out.groups + 1] = {
@@ -104,10 +153,10 @@ function api_switch()
         json_out({ ok = false, error = "missing name" })
         return
     end
-    local ok, c = pcall(clash_client)
-    if not ok then json_out({ ok = false, error = "clash init failed" }) return end
+    local c = clash_client()
+    if not c then json_out({ ok = false, error = "clash init failed" }) return end
     local st = c:request("PUT", "/proxies/" .. luci.util.urlencode(group),
-                         require("json").encode({ name = name }))
+                         jencode({ name = name }))
     json_out({ ok = (st == 204 or st == 200) })
 end
 
@@ -118,14 +167,14 @@ function api_delay()
         json_out({ ok = false, error = "missing tag" })
         return
     end
-    local ok, c = pcall(clash_client)
-    if not ok then json_out({ ok = false, error = "clash init failed" }) return end
+    local c = clash_client()
+    if not c then json_out({ ok = false, error = "clash init failed" }) return end
     local url = "https://www.gstatic.com/generate_204"
     local st, body = c:request("GET", "/proxies/" .. luci.util.urlencode(tag) ..
         "/delay?url=" .. luci.util.urlencode(url) .. "&timeout=5000")
     if st == 200 and body then
-        local ok2, data = pcall(require("json").decode, body)
-        if ok2 and data and data.delay then
+        local data = jdecode(body)
+        if data and data.delay then
             json_out({ ok = true, delay = data.delay })
             return
         end
@@ -171,21 +220,22 @@ function api_ruleadd()
         json_out({ ok = false, error = "bad value" })
         return
     end
-    local json = require("json")
     local p = "/etc/singbox_lite/rules.json"
     local f = io.open(p, "r")
     local data = { rules = {} }
     if f then
-        local ok, d = pcall(json.decode, f:read("*a"))
+        local d = jdecode(f:read("*a"))
         f:close()
-        if ok and d and d.rules then data = d end
+        if d and d.rules then data = d end
     end
     local rule = { outbound = fout }
     rule[ftype] = { fval }
     data.rules[#data.rules + 1] = rule
     f = io.open(p, "w")
     if not f then json_out({ ok = false, error = "write failed" }) return end
-    f:write(json.encode(data))
+    local enc = jencode(data)
+    if not enc then json_out({ ok = false, error = "encode failed" }) return end
+    f:write(enc)
     f:close()
     luci.sys.call("/etc/init.d/singbox_lite reload >/dev/null 2>&1")
     json_out({ ok = true })
@@ -212,19 +262,20 @@ function api_nodestate()
         json_out({ ok = false, error = "missing tag" })
         return
     end
-    local json = require("json")
     local p = "/etc/singbox_lite/nodes.state"
     local f = io.open(p, "r")
     local data = {}
     if f then
-        local ok, d = pcall(json.decode, f:read("*a"))
+        local d = jdecode(f:read("*a"))
         f:close()
-        if ok and type(d) == "table" then data = d end
+        if type(d) == "table" then data = d end
     end
     data[tag] = { enabled = enabled }
     f = io.open(p, "w")
     if not f then json_out({ ok = false, error = "write failed" }) return end
-    f:write(json.encode(data))
+    local enc = jencode(data)
+    if not enc then json_out({ ok = false, error = "encode failed" }) return end
+    f:write(enc)
     f:close()
     luci.sys.call("/etc/init.d/singbox_lite reload >/dev/null 2>&1")
     json_out({ ok = true })
