@@ -1,0 +1,41 @@
+<div class="cbi-section">
+  <h3><%:快捷添加规则%></h3>
+  <p class="cbi-section-descr"><%:填写后追加到规则列表末尾（在默认 final 之前生效）。%></p>
+  <div class="cbi-value">
+    <label class="cbi-value-title"><%:匹配类型%></label>
+    <div class="cbi-value-field">
+      <select id="qa_type" class="cbi-input-select">
+        <option value="domain_suffix"><%:域名后缀（如 google.com）%></option>
+        <option value="domain_keyword"><%:域名关键字%></option>
+        <option value="ip_cidr"><%:IP 段（如 1.2.3.0/24）%></option>
+      </select>
+      <input id="qa_value" class="cbi-input-text" style="width:16em" placeholder="example.com" />
+      <select id="qa_out" class="cbi-input-select">
+        <option value="proxy"><%:走代理%></option>
+        <option value="direct"><%:直连%></option>
+        <option value="block"><%:拦截%></option>
+      </select>
+      <input type="button" class="cbi-button cbi-button-apply" value="<%:添加规则%>" onclick="ruleAdd()" />
+      <span id="qa_msg" style="margin-left:1em;color:#090"></span>
+    </div>
+  </div>
+</div>
+<script type="text/javascript">
+function ruleAdd() {
+  var t = document.getElementById('qa_type').value;
+  var v = document.getElementById('qa_value').value.trim();
+  var o = document.getElementById('qa_out').value;
+  var msg = document.getElementById('qa_msg');
+  if (!v) { msg.style.color = 'red'; msg.textContent = '<%:请填写匹配值%>'; return; }
+  XHR.post('<%=luci.dispatcher.build_url("admin/services/singbox_lite/api/ruleadd")%>',
+    { type: t, value: v, outbound: o },
+    function(x, data) {
+      if (data && data.ok) {
+        msg.style.color = '#090'; msg.textContent = '<%:已添加，页面刷新后可见%>';
+        setTimeout(function(){ location.reload(); }, 800);
+      } else {
+        msg.style.color = 'red'; msg.textContent = '<%:添加失败%>' + (data && data.error ? ': ' + data.error : '');
+      }
+    });
+}
+</script>

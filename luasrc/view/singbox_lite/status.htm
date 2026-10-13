@@ -1,0 +1,209 @@
+<%+header%>
+<h2><%:SingBox Lite - 运行状态%></h2>
+
+<div class="cbi-section">
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+    <div class="cbi-section" style="flex:1;min-width:150px;text-align:center;padding:12px">
+      <div style="color:#888"><%:服务状态%></div>
+      <div id="svc_state" style="font-size:20px;font-weight:bold">…</div>
+    </div>
+    <div class="cbi-section" style="flex:1;min-width:150px;text-align:center;padding:12px">
+      <div style="color:#888"><%:当前节点%></div>
+      <div id="cur_node" style="font-size:18px;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">…</div>
+    </div>
+    <div class="cbi-section" style="flex:1;min-width:150px;text-align:center;padding:12px">
+      <div style="color:#888"><%:运行模式%></div>
+      <div id="cur_mode" style="font-size:18px;font-weight:bold">…</div>
+    </div>
+    <div class="cbi-section" style="flex:1;min-width:150px;text-align:center;padding:12px">
+      <div style="color:#888"><%:sing-box 版本%></div>
+      <div id="sb_ver" style="font-size:16px">…</div>
+    </div>
+  </div>
+
+  <h3><%:实时网速%></h3>
+  <div style="display:flex;gap:24px;align-items:baseline;margin:8px 0">
+    <div style="font-size:28px">↑ <span id="spd_up" style="color:#090;font-weight:bold">-</span></div>
+    <div style="font-size:28px">↓ <span id="spd_down" style="color:#009;font-weight:bold">-</span></div>
+    <div id="spd_err" style="color:red"></div>
+  </div>
+  <canvas id="spark" width="640" height="130" style="width:100%;max-width:640px;height:130px;border:1px solid #ddd;border-radius:6px"></canvas>
+  <div style="color:#888;font-size:12px;margin-top:4px">
+    <span style="color:#090">■</span> <%:上行%> &nbsp;
+    <span style="color:#009">■</span> <%:下行%>
+  </div>
+
+  <h3 style="margin-top:20px"><%:快捷操作%></h3>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input type="button" class="cbi-button cbi-button-apply" value="<%:规则分流%>" onclick="setMode('rule')" />
+    <input type="button" class="cbi-button cbi-button-apply" value="<%:全局代理%>" onclick="setMode('global')" />
+    <input type="button" class="cbi-button cbi-button-apply" value="<%:全局直连%>" onclick="setMode('direct')" />
+    <span style="width:12px"></span>
+    <input type="button" class="cbi-button" value="<%:启动%>" onclick="svc('start')" />
+    <input type="button" class="cbi-button" value="<%:停止%>" onclick="svc('stop')" />
+    <input type="button" class="cbi-button" value="<%:重启%>" onclick="svc('restart')" />
+    <input type="button" class="cbi-button" value="<%:更新订阅%>" onclick="svc('subupdate')" />
+    <span id="op_msg" style="margin-left:8px;color:#090"></span>
+  </div>
+
+  <h3 style="margin-top:20px"><%:节点列表%>
+    <input type="button" class="cbi-button cbi-button-small" value="<%:全部测速%>" onclick="testAll()" style="margin-left:12px" />
+    <input type="button" class="cbi-button cbi-button-small" value="<%:刷新%>" onclick="loadNodes()" />
+  </h3>
+  <div class="table">
+    <div class="tr table-titles">
+      <div class="th"><%:节点%></div>
+      <div class="th"><%:类型%></div>
+      <div class="th"><%:延迟%></div>
+      <div class="th"><%:操作%></div>
+    </div>
+    <div id="node_rows"><div class="tr"><div class="td"><%:加载中…%></div></div></div>
+  </div>
+</div>
+
+<script type="text/javascript">
+var API = '<%=luci.dispatcher.build_url("admin/services/singbox_lite/api")%>/';
+var hist = []; // {up, down}
+var curNode = '';
+
+function fmtSpeed(b) {
+  if (b == null || isNaN(b)) return '-';
+  if (b < 1024) return b + ' B/s';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB/s';
+  return (b / 1048576).toFixed(2) + ' MB/s';
+}
+
+function drawSpark() {
+  var cv = document.getElementById('spark'), ctx = cv.getContext('2d');
+  var W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  if (hist.length < 2) return;
+  var max = 1;
+  hist.forEach(function(p){ max = Math.max(max, p.up, p.down); });
+  function line(key, color) {
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+    hist.forEach(function(p, i) {
+      var x = i / (hist.length - 1) * W, y = H - (p[key] / max) * (H - 8) - 4;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+  }
+  line('down', '#009'); line('up', '#090');
+}
+
+function pollTraffic() {
+  XHR.get(API + 'traffic', null, function(x, d) {
+    var err = document.getElementById('spd_err');
+    if (!d) { err.textContent = '<%:请求失败%>'; return; }
+    err.textContent = d.error || '';
+    document.getElementById('svc_state').innerHTML =
+      d.running ? '<span style="color:#090"><%:运行中%></span>'
+                : '<span style="color:red"><%:已停止%></span>';
+    document.getElementById('spd_up').textContent = fmtSpeed(d.up);
+    document.getElementById('spd_down').textContent = fmtSpeed(d.down);
+    if (d.running && !d.error) {
+      hist.push({ up: d.up || 0, down: d.down || 0 });
+      if (hist.length > 60) hist.shift();
+      drawSpark();
+    }
+  });
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function loadNodes() {
+  XHR.get(API + 'proxies', null, function(x, d) {
+    var box = document.getElementById('node_rows');
+    if (!d || !d.running) { box.innerHTML = '<div class="tr"><div class="td"><%:服务未运行%></div></div>'; return; }
+    var cur = '';
+    (d.groups || []).forEach(function(g){ if (g.tag === 'proxy') cur = g.now; });
+    curNode = cur;
+    document.getElementById('cur_node').textContent = cur || '-';
+    var html = '';
+    var nodes = (d.nodes || []).slice().sort(function(a, b){
+      return String(a.tag).localeCompare(String(b.tag));
+    });
+    if (!nodes.length) html = '<div class="tr"><div class="td"><%:暂无节点，请先更新订阅或手动导入%></div></div>';
+    nodes.forEach(function(n, i) {
+      var isCur = (n.tag === cur);
+      var delay = (n.delay != null) ? n.delay + ' ms' : '-';
+      html += '<div class="tr">' +
+        '<div class="td" style="font-weight:' + (isCur ? 'bold' : 'normal') + '">' + esc(n.tag) +
+          (isCur ? ' <span style="color:#090">●</span>' : '') + '</div>' +
+        '<div class="td">' + esc(n.type || '') + '</div>' +
+        '<div class="td" id="delay_' + i + '">' + delay + '</div>' +
+        '<div class="td">' +
+          '<input type="button" class="cbi-button cbi-button-small" value="<%:切换%>" onclick="switchNode(\'' + esc(n.tag).replace(/'/g, "\\'") + '\')" /> ' +
+          '<input type="button" class="cbi-button cbi-button-small" value="<%:测速%>" onclick="testDelay(' + i + ',\'' + esc(n.tag).replace(/'/g, "\\'") + '\')" /> ' +
+          '<input type="button" class="cbi-button cbi-button-small cbi-button-reset" value="<%:禁用%>" onclick="nodeState(\'' + esc(n.tag).replace(/'/g, "\\'") + '\',0)" />' +
+        '</div></div>';
+    });
+    box.innerHTML = html;
+    window._nodes = nodes;
+  });
+}
+
+function switchNode(tag) {
+  XHR.post(API + 'switch', { group: 'proxy', name: tag }, function(x, d) {
+    opMsg(d && d.ok ? '<%:已切换到%> ' + tag : '<%:切换失败%>');
+    loadNodes();
+  });
+}
+
+function testDelay(i, tag) {
+  document.getElementById('delay_' + i).textContent = '…';
+  XHR.get(API + 'delay', { tag: tag }, function(x, d) {
+    document.getElementById('delay_' + i).textContent =
+      (d && d.ok) ? d.delay + ' ms' : '<%:超时%>';
+  });
+}
+
+function testAll() {
+  (window._nodes || []).forEach(function(n, i){ testDelay(i, n.tag); });
+}
+
+function nodeState(tag, en) {
+  XHR.post(API + 'nodestate', { tag: tag, enabled: en }, function(x, d) {
+    opMsg(d && d.ok ? '<%:已更新%>' : '<%:操作失败%>');
+    setTimeout(loadNodes, 1500);
+  });
+}
+
+function setMode(m) {
+  XHR.post(API + 'mode', { mode: m }, function(x, d) {
+    opMsg(d && d.ok ? '<%:模式已切换%>' : '<%:切换失败%>');
+    setTimeout(refreshMeta, 1500);
+  });
+}
+
+function svc(a) {
+  opMsg('<%:执行中…%>');
+  XHR.get(API + 'service', { action: a }, function(x, d) {
+    opMsg(d && d.ok ? '<%:完成%>' : '<%:失败%>');
+    setTimeout(function(){ pollTraffic(); loadNodes(); refreshMeta(); }, 2000);
+  });
+}
+
+function opMsg(t) { document.getElementById('op_msg').textContent = t; }
+
+function refreshMeta() {
+  // mode + version via a lightweight proxies call reuse
+  XHR.get(API + 'proxies', null, function(x, d) {
+    if (d && d.running) {
+      document.getElementById('sb_ver').textContent = 'sing-box';
+    }
+  });
+  // current mode from server-rendered value below
+}
+
+pollTraffic(); loadNodes();
+setInterval(pollTraffic, 2000);
+setInterval(loadNodes, 15000);
+</script>
+<% local uci = luci.model.uci.cursor() %>
+<script type="text/javascript">
+document.getElementById('cur_mode').textContent =
+  ({rule:'<%:规则分流%>',global:'<%:全局代理%>',direct:'<%:全局直连%>'}['<%=uci:get("singbox_lite","main","mode") or "rule"%>'] || '-');
+document.getElementById('sb_ver').textContent = '<%=luci.sys.exec("/usr/sbin/singbox version 2>/dev/null | head -1"):gsub("\n","")%>' || '-';
+</script>
+<%+footer%>
